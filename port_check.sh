@@ -1,52 +1,74 @@
 #!/usr/bin/env bash
 
-if [ "$EUID" -ne 0 ]; then
-	echo "Warning: Not running as root. Some processes may not show PID."
+set -euo pipefail
+
+DEBUG=false
+
+usage() {
+	echo "Usage $0 [-d] <port1> [port2] [port3] ..."
+	exit1
+}
+
+log_debug() {
+	if 
+		[ "DEBUG" = true ]; then
+		echo "[DEBUG] $1"
+	fi
+}
+
+check_port() {
+	local PORT=$1
+
+	log_debug "Checking port $PORT"
+
+	if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+		echo "Invalid port: $PORT"
+		return 2
+	fi
+
+	LINE=$(sudo ss -tulnp 2>/dev/null | grep ":$PORT " || true)
+
+	if [ -z "$LINE" ]; then
+		echo "Port $PORT: FREE"
+		return 0
+	fi
+
+	PID=$(echo "$LINE" | grep -oP 'pid=\K[0-9]+' | head -n1 | tr -d '\n')
+
+	if [ -z "$PID" ]; then
+		echo "Port $PORT: IN USE (PID unknown)"
+		return 1
+	fi
+
+	PROC=$(ps -p "$PID" -o pid,user,comm --no-headers)
+
+	echo "Port $PORT: IN USE"
+	echo " $PROC"
+	return 1
+
+}
+
+# ----- main -----
+
+if [ $# = "-d" ]; then
+	usage
 fi
 
-PORT=$1
-
-if [ -z "$PORT" ]; then
-	echo  "Usage: /.port_check.sh <port>"
-	exit 1
+if [ $1 = "-d" ]; then
+	DEBUG=true
+	shift
 fi
 
-echo "==================================="
-echo "Checking port $PORT..."
-echo "==================================="
-
-LINE=$(ss -tulnp | grep ":$PORT ")
-
-if [ -z "$LINE" ]; then
-	echo "Result: Port $PORT is NOT in use."
-	exit 0
+if [ $# -eq 0 ]; then
+	usage
 fi
 
-echo "Port $PORT is IN USE."
-echo
+EXIT_CODE=0
 
-# Получаем PID
-PID=$(echo "$LINE" | grep -oP 'pid=\K[0-9]+')
+for PORT in "$@"; do
+	if ! check_port "$PORT"; then 
+		EXIT_CODE=1
+	fi
+done
 
-if [ -z "$PID" ]; then
-	echo "Could not determine PID. Process may be root-owned or require sudo."
-	exit 1
-fi
-
-#Получаем подробности процесса
-PROC=$(ps -p "$PID" -o pid,user,comm)
-
-echo "Process details:"
-echo "$PROC"
-echo
-
-
-#Проверяем, управляется ли процесс systemd
-SERVICE=$(systemctl list-units --type=service --all | grep -w "$PID")
-if [ -z "$SERVICE" ]; then
-	echo "This process does NOT appear to be managed by systemd."
-else
-	echo "This process may be managed by systemd."
-fi
-
-echo "===================================="
+exit $EXIT_CODE
